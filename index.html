@@ -330,12 +330,12 @@
 
   <!-- SCREEN 2: QUESTION (impact area + optional neighborhood, one screen) -->
   <section class="screen" id="screen-question">
-    <div class="q-headline" id="q-headline">Where does your community need more&nbsp;flourishing?</div>
+    <div class="q-headline" id="q-headline">Where does our community need more&nbsp;flourishing?</div>
     <div class="q-sub" id="q-sub">Pick the one that speaks to you most.</div>
     <div class="options" id="options"></div>
 
     <div class="nb-field" id="nb-field">
-      <div class="nb-label">What neighborhood are you joining us from today? (optional)</div>
+      <div class="nb-label">What neighborhood do you call home? (optional)</div>
       <input class="nb-input" id="nb-input" list="nb-list" placeholder="Start typing or choose a neighborhood…" autocomplete="off" />
       <datalist id="nb-list"></datalist>
     </div>
@@ -348,7 +348,7 @@
   <!-- SCREEN 4: RESULTS -->
   <section class="screen" id="screen-results">
     <div class="eyebrow in">Your Community, In Real Time</div>
-    <div class="display" style="font-size:clamp(24px,3.6vw,34px);">Here's what your community is telling us.</div>
+    <div class="display" style="font-size:clamp(24px,3.6vw,34px);">Here's what our community is telling us.</div>
     <div class="results-list" id="results-list"></div>
     <div class="results-note" id="results-note"></div>
 
@@ -359,6 +359,7 @@
         <a id="cta-general" href="#" target="_blank" rel="noopener">Give where it's needed most</a>
         <a id="cta-newsletter" href="#" target="_blank" rel="noopener">Stay in touch with TCF</a>
         <a id="cta-contact" href="https://www.clevelandfoundation.org/about-us/contact-us" target="_blank" rel="noopener">Contact us</a>
+        <a id="cta-vote-again" href="#">Vote again</a>
       </div>
     </div>
   </section>
@@ -741,6 +742,25 @@
     state.neighborhood = val || null;
     submitVote();
   });
+
+  document.getElementById("cta-vote-again").addEventListener("click", function(e){
+    e.preventDefault();
+    resetForNewVote();
+  });
+
+  function resetForNewVote(){
+    state.choice = null;
+    state.neighborhood = null;
+
+    document.querySelectorAll(".opt-card").forEach(function(card){
+      card.classList.remove("selected");
+    });
+    document.getElementById("nb-input").value = "";
+    document.getElementById("btn-continue").disabled = true;
+    document.getElementById("continue-wrap").classList.remove("ready");
+
+    showScreen("screen-question");
+  }
 
   // ---------------------------------------------------------------
   // Boot
