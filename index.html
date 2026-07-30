@@ -101,6 +101,15 @@
   .fade-line.out{ opacity:0; transform:translateY(-8px); transition:opacity .9s var(--ease), transform .9s var(--ease); }
   .fade-line em{ font-style:italic; color:var(--green-bright); }
 
+  .fade-subline{
+    font-family:'Fraunces', serif;
+    font-weight:300;
+    font-size:clamp(18px, 4.4vw, 34px);
+    white-space:nowrap;
+    line-height:1.5;
+  }
+  .fade-subline:first-child{ font-weight:500; color:var(--green-bright); }
+
   #fade-stage{ min-height:1.3em; }
   .landing-cta{
     margin-top:56px;
@@ -326,7 +335,7 @@
     <div class="options" id="options"></div>
 
     <div class="nb-field" id="nb-field">
-      <div class="nb-label">Optional — what neighborhood are you joining us from today?</div>
+      <div class="nb-label">What neighborhood are you joining us from today? (optional)</div>
       <input class="nb-input" id="nb-input" list="nb-list" placeholder="Start typing or choose a neighborhood…" autocomplete="off" />
       <datalist id="nb-list"></datalist>
     </div>
@@ -420,6 +429,65 @@
   // Swap this for the real subscribe URL before deploying.
   var NEWSLETTER_LINK = "https://www.clevelandfoundation.org/";
 
+  // Power Automate HTTP-trigger webhook — writes each vote into the
+  // "TCF Flourishing Votes" Excel table (OneDrive). This URL contains a
+  // signature that grants access to trigger the flow — treat it as a
+  // credential: don't post it publicly, and redeploy the trigger to
+  // rotate it if it ever leaks.
+  // KNOWN RISK: Power Automate HTTP triggers commonly don't return the
+  // CORS headers browsers require for cross-origin fetch() calls. This
+  // call is fire-and-forget specifically so a CORS/network failure never
+  // blocks the voter's experience — but it also means a silent failure
+  // here won't be obvious without checking the Excel file directly.
+  // Verify a real row lands in the sheet after testing a live vote.
+  var VOTE_WEBHOOK_URL = "https://defaulta5aea7ee1a0f47aeaf5c56669b78bf.10.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/21/workflows/6a5461add9e043a0987621e376e39577/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=X7pCpgL4-TaNSnhqILo7dYnEaVrKpF8QcpMCagoEX7E";
+
+  // Second Power Automate flow: "List rows present in a table" -> Response.
+  // Reads back every vote currently in the Excel table so the results
+  // screen can reflect real votes from every visitor, not just this device.
+  var RESULTS_WEBHOOK_URL = "https://defaulta5aea7ee1a0f47aeaf5c56669b78bf.10.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/02/workflows/5b325d3254d147c69eb3793225ab93de/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=rgtJt4JeWAqYkB5GntOtO1wp5akZgKrEri-55nhV4TM";
+
+  function fetchRemoteTallies(){
+    if (!RESULTS_WEBHOOK_URL) return Promise.resolve(null);
+    return fetch(RESULTS_WEBHOOK_URL)
+      .then(function(res){ return res.json(); })
+      .then(function(data){
+        var rows = Array.isArray(data) ? data : (data && Array.isArray(data.value)) ? data.value : [];
+        var tallies = emptyTallies();
+        rows.forEach(function(row){
+          var id = row.CategoryID || row.categoryID || row.category_id;
+          if (id && tallies.hasOwnProperty(id)){ tallies[id] += 1; }
+        });
+        return tallies;
+      })
+      .catch(function(err){
+        // Same fire-and-forget philosophy as the write side: if this is
+        // blocked (CORS or otherwise), fall back silently to whatever
+        // local tallies are already on screen rather than showing an error.
+        console.warn("Results webhook fetch failed:", err);
+        return null;
+      });
+  }
+
+  function sendVoteToBackend(categoryId, categoryLabel, neighborhood){
+    if (!VOTE_WEBHOOK_URL) return;
+    var payload = {
+      Timestamp: new Date().toISOString(),
+      CategoryID: categoryId,
+      CategoryLabel: categoryLabel,
+      Neighborhood: neighborhood || ""
+    };
+    fetch(VOTE_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }).catch(function(err){
+      // Fire-and-forget: a failed/blocked call (e.g. CORS) should never
+      // interrupt the voting experience. Logged for debugging only.
+      console.warn("Vote webhook call failed:", err);
+    });
+  }
+
   var NEIGHBORHOODS = [
     "Ohio City","Tremont","Detroit Shoreway","Downtown","University Circle",
     "Midtown","Central","Hough","Fairfax","Glenville","Collinwood",
@@ -489,7 +557,7 @@
   function runLanding(){
     var stage = document.getElementById("fade-stage");
     var first = "To make the lives of <em>Clevelanders</em> better — now, and for generations to come.";
-    var second = "Welcome. We're so glad you're here.";
+    var secondLines = ["Welcome", "We're so glad you're here.", "Enjoy the Guest Wi-Fi"];
 
     var el1 = document.createElement("div");
     el1.className = "fade-line";
@@ -506,7 +574,9 @@
       setTimeout(function(){
         var el2 = document.createElement("div");
         el2.className = "fade-line";
-        el2.innerHTML = second;
+        el2.innerHTML = secondLines.map(function(line){
+          return '<div class="fade-subline">' + line + '</div>';
+        }).join("");
         stage.innerHTML = "";
         stage.appendChild(el2);
         requestAnimationFrame(function(){
@@ -565,6 +635,10 @@
     // increment and persist the tally only once the visitor confirms
     state.tallies[state.choice] = (state.tallies[state.choice] || 0) + 1;
     saveTallies(state.tallies);
+
+    var chosen = CATEGORIES.filter(function(c){ return c.id === state.choice; })[0];
+    sendVoteToBackend(state.choice, chosen ? chosen.label : state.choice, state.neighborhood);
+
     goToResults();
   }
 
@@ -582,26 +656,39 @@
   }
 
   function goToResults(){
-    renderResults();
+    renderResultsFromTallies(state.tallies);
     showScreen("screen-results");
+
+    fetchRemoteTallies().then(function(remote){
+      if (!remote) return;
+      var merged = {};
+      // Take the higher of the two counts per category — guards against
+      // the brief race where this vote's own Excel row hasn't been
+      // written yet when we ask for live results a moment later.
+      CATEGORIES.forEach(function(c){
+        merged[c.id] = Math.max(remote[c.id] || 0, state.tallies[c.id] || 0);
+      });
+      state.tallies = merged;
+      renderResultsFromTallies(merged);
+    });
   }
 
   // ---------------------------------------------------------------
   // Screen 4: results
   // ---------------------------------------------------------------
-  function renderResults(){
+  function renderResultsFromTallies(tallies){
     var total = 0;
-    CATEGORIES.forEach(function(c){ total += (state.tallies[c.id] || 0); });
+    CATEGORIES.forEach(function(c){ total += (tallies[c.id] || 0); });
     if (total === 0) total = 1;
 
     var sorted = CATEGORIES.slice().sort(function(a,b){
-      return (state.tallies[b.id]||0) - (state.tallies[a.id]||0);
+      return (tallies[b.id]||0) - (tallies[a.id]||0);
     });
 
     var list = document.getElementById("results-list");
     list.innerHTML = "";
     sorted.forEach(function(cat){
-      var count = state.tallies[cat.id] || 0;
+      var count = tallies[cat.id] || 0;
       var pct = Math.round((count/total)*100);
       var isMine = cat.id === state.choice;
       var row = document.createElement("div");
@@ -621,7 +708,7 @@
       });
     }, 60);
 
-    var totalVoices = total === 1 && (state.tallies[state.choice]||0) <= 1 ? 1 : total;
+    var totalVoices = total === 1 && (tallies[state.choice]||0) <= 1 ? 1 : total;
     document.getElementById("results-note").textContent =
       totalVoices + (totalVoices === 1 ? " voice heard so far today." : " voices heard so far today.");
 
