@@ -451,20 +451,27 @@
   function fetchRemoteTallies(){
     if (!RESULTS_WEBHOOK_URL) return Promise.resolve(null);
     return fetch(RESULTS_WEBHOOK_URL)
-      .then(function(res){ return res.json(); })
+      .then(function(res){
+        if (!res.ok) throw new Error("Results flow returned HTTP " + res.status);
+        return res.json();
+      })
       .then(function(data){
         var rows = Array.isArray(data) ? data : (data && Array.isArray(data.value)) ? data.value : [];
         var tallies = emptyTallies();
         rows.forEach(function(row){
-          var id = row.CategoryID || row.categoryID || row.category_id;
+          // The Excel table's header cells decide the JSON key names.
+          // Accept the intended header (CategoryID) and also Excel's
+          // default "Column1" in case the table headers haven't been
+          // renamed yet.
+          var id = row.CategoryID || row.categoryID || row.category_id || row.Column1;
           if (id && tallies.hasOwnProperty(id)){ tallies[id] += 1; }
         });
         return tallies;
       })
       .catch(function(err){
-        // Same fire-and-forget philosophy as the write side: if this is
-        // blocked (CORS or otherwise), fall back silently to whatever
-        // local tallies are already on screen rather than showing an error.
+        // If this is blocked or the flow errors, goToResults() tells the
+        // visitor live results are unavailable instead of presenting a
+        // one-vote tally as if it were the whole community.
         console.warn("Results webhook fetch failed:", err);
         return null;
       });
@@ -497,51 +504,19 @@
     "Outside Cleveland"
   ];
 
-  var STORAGE_KEY = "tcf_flourishing_votes_v1";
-  var storageIsShared = true;
-  var hasStorageApi = !!(window.storage && typeof window.storage.get === "function");
-
-  var state = { choice: null, neighborhood: null, tallies: {} };
+  var state = { choice: null, neighborhood: null, tallies: {}, remoteOk: false };
 
   // ---------------------------------------------------------------
-  // Storage layer — uses shared artifact storage when available,
-  // falls back to a local (device-only) tally so the page never breaks.
-  // In a real production deployment (outside claude.ai), replace
-  // loadTallies()/saveTallies() with a call to your own backend
-  // (e.g. a small Google Sheet + Apps Script webhook, Airtable, or Supabase)
-  // so votes aggregate across every guest device, not just this browser.
+  // Tallies: the Excel table (via the Power Automate read flow) is the
+  // source of truth. state.tallies only holds votes cast during THIS
+  // page session, so the visitor's own vote always shows up even in the
+  // few seconds before their row lands in Excel. Nothing is persisted
+  // in the browser — a device never carries stale counts between guests.
   // ---------------------------------------------------------------
   function emptyTallies(){
     var t = {};
     CATEGORIES.forEach(function(c){ t[c.id] = 0; });
     return t;
-  }
-
-  function loadTallies(){
-    return new Promise(function(resolve){
-      if (hasStorageApi){
-        window.storage.get(STORAGE_KEY, storageIsShared).then(function(res){
-          if (res && res.value){
-            try { resolve(JSON.parse(res.value)); return; } catch(e){}
-          }
-          resolve(emptyTallies());
-        }).catch(function(){ resolve(emptyTallies()); });
-      } else {
-        try {
-          var raw = localStorage.getItem(STORAGE_KEY);
-          resolve(raw ? JSON.parse(raw) : emptyTallies());
-        } catch(e){ resolve(emptyTallies()); }
-      }
-    });
-  }
-
-  function saveTallies(tallies){
-    var json = JSON.stringify(tallies);
-    if (hasStorageApi){
-      window.storage.set(STORAGE_KEY, json, storageIsShared).catch(function(){});
-    } else {
-      try { localStorage.setItem(STORAGE_KEY, json); } catch(e){}
-    }
   }
 
   // ---------------------------------------------------------------
@@ -635,7 +610,6 @@
     if (!state.choice) return;
     // increment and persist the tally only once the visitor confirms
     state.tallies[state.choice] = (state.tallies[state.choice] || 0) + 1;
-    saveTallies(state.tallies);
 
     var chosen = CATEGORIES.filter(function(c){ return c.id === state.choice; })[0];
     sendVoteToBackend(state.choice, chosen ? chosen.label : state.choice, state.neighborhood);
@@ -661,15 +635,20 @@
     showScreen("screen-results");
 
     fetchRemoteTallies().then(function(remote){
-      if (!remote) return;
+      if (!remote){
+        state.remoteOk = false;
+        document.getElementById("results-note").textContent =
+          "Live community results aren't available right now — thank you for adding your voice.";
+        return;
+      }
+      state.remoteOk = true;
       var merged = {};
       // Take the higher of the two counts per category — guards against
-      // the brief race where this vote's own Excel row hasn't been
+      // the brief race where this session's own Excel row hasn't been
       // written yet when we ask for live results a moment later.
       CATEGORIES.forEach(function(c){
         merged[c.id] = Math.max(remote[c.id] || 0, state.tallies[c.id] || 0);
       });
-      state.tallies = merged;
       renderResultsFromTallies(merged);
     });
   }
@@ -765,12 +744,10 @@
   // ---------------------------------------------------------------
   // Boot
   // ---------------------------------------------------------------
-  loadTallies().then(function(t){
-    state.tallies = t;
-    buildOptions();
-    buildNeighborhoodList();
-    runLanding();
-  });
+  state.tallies = emptyTallies();
+  buildOptions();
+  buildNeighborhoodList();
+  runLanding();
 
 })();
 </script>
