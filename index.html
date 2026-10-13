@@ -58,13 +58,19 @@
 
   .screen{
     position:absolute; inset:0;
-    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    display:flex; flex-direction:column; align-items:center; justify-content:flex-start;
     padding:8vh 6vw;
+    overflow-y:auto; overflow-x:hidden;
+    -webkit-overflow-scrolling:touch;
     opacity:0; visibility:hidden;
     transition: opacity .6s var(--ease);
     z-index:1;
   }
   .screen.active{ opacity:1; visibility:visible; }
+  /* spacers center the content when it fits and collapse when it doesn't,
+     so tall content (phones) starts at the top and scrolls instead of
+     being clipped above the screen */
+  .screen::before, .screen::after{ content:""; flex:1 0 0; }
 
   /* ---------- shared type ---------- */
   .eyebrow{
@@ -235,7 +241,11 @@
   .nb-input:focus-visible{ outline:2px solid var(--green-bright); outline-offset:2px; }
 
   .continue-wrap{
-    margin-top:28px;
+    position:sticky; bottom:0; z-index:2;
+    width:100%; text-align:center;
+    padding:16px 0 12px;
+    background:linear-gradient(to top, var(--bg) 62%, rgba(14,21,18,0));
+    margin-top:12px;
     opacity:0; transform:translateY(8px);
     transition:opacity .5s var(--ease), transform .5s var(--ease);
     pointer-events:none;
@@ -270,6 +280,38 @@
     margin-top:14px;
   }
 
+  /* results: loading state while the true count is fetched */
+  .results-loading{
+    display:none; flex-direction:column; align-items:center; gap:18px;
+    text-align:center;
+  }
+  .results-loading.show{ display:flex; animation: fadeIn .7s var(--ease) both; }
+  .loading-dots{ display:flex; gap:10px; }
+  .loading-dots span{
+    width:10px; height:10px; border-radius:50%;
+    background:var(--green-bright);
+    animation: dotPulse 1.3s ease-in-out infinite;
+  }
+  .loading-dots span:nth-child(2){ animation-delay:.18s; }
+  .loading-dots span:nth-child(3){ animation-delay:.36s; }
+  .loading-text{
+    font-family:'Fraunces', serif; font-style:italic; font-weight:300;
+    font-size:clamp(22px,3.4vw,30px); color:var(--cream);
+  }
+  .loading-sub{ font-size:13px; color:var(--cream-dim); }
+  @keyframes dotPulse{
+    0%,80%,100%{ opacity:.25; transform:scale(.8); }
+    40%{ opacity:1; transform:scale(1.15); }
+  }
+  @keyframes fadeIn{ from{ opacity:0; } to{ opacity:1; } }
+  @keyframes riseIn{ from{ opacity:0; transform:translateY(12px); } to{ opacity:1; transform:translateY(0); } }
+
+  .results-content{
+    display:none; width:100%;
+    flex-direction:column; align-items:center;
+  }
+  .results-content.show{ display:flex; animation: riseIn .9s var(--ease) both; }
+
   .cta-panel{
     margin-top:48px;
     width:100%;
@@ -302,7 +344,10 @@
     color:var(--cream-faint); z-index:1;
   }
 
+  @media (max-width:520px), (max-height:860px){ .footer-mark{ display:none; } }
+
   @media (prefers-reduced-motion: reduce){
+    .results-loading.show, .results-content.show, .loading-dots span{ animation:none !important; }
     .fade-line, .landing-cta, .landing-sub, .q-headline, .q-sub, .options, .opt-card, .vote-btn{
       animation:none !important; transition:opacity .2s linear !important; transform:none !important;
     }
@@ -347,6 +392,13 @@
 
   <!-- SCREEN 4: RESULTS -->
   <section class="screen" id="screen-results">
+    <div class="results-loading" id="results-loading" aria-live="polite">
+      <div class="loading-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="loading-text">Counting every voice&hellip;</div>
+      <div class="loading-sub">Thank you for adding yours.</div>
+    </div>
+
+    <div class="results-content" id="results-content">
     <div class="eyebrow in">Your Community, In Real Time</div>
     <div class="display" style="font-size:clamp(24px,3.6vw,34px);">Here's what our community is telling us.</div>
     <div class="results-list" id="results-list"></div>
@@ -361,6 +413,7 @@
         <a id="cta-contact" href="https://www.clevelandfoundation.org/about-us/contact-us" target="_blank" rel="noopener">Contact us</a>
         <a id="cta-vote-again" href="#">Vote again</a>
       </div>
+    </div>
     </div>
   </section>
 
@@ -448,10 +501,11 @@
   // screen can reflect real votes from every visitor, not just this device.
   var RESULTS_WEBHOOK_URL = "https://defaulta5aea7ee1a0f47aeaf5c56669b78bf.10.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/02/workflows/5b325d3254d147c69eb3793225ab93de/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=rgtJt4JeWAqYkB5GntOtO1wp5akZgKrEri-55nhV4TM";
 
-  function fetchRemoteTallies(){
+  // Reads every row currently in the Excel table via the read flow.
+  // The flow's trigger accepts POST only (a blank Method means POST),
+  // so this is a POST with an empty JSON body.
+  function fetchRemoteRows(){
     if (!RESULTS_WEBHOOK_URL) return Promise.resolve(null);
-    // The flow's trigger accepts POST only (blank Method = POST), so the
-    // results request is a POST with an empty JSON body.
     return fetch(RESULTS_WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -462,31 +516,69 @@
         return res.json();
       })
       .then(function(data){
-        var rows = Array.isArray(data) ? data : (data && Array.isArray(data.value)) ? data.value : [];
-        var tallies = emptyTallies();
-        rows.forEach(function(row){
-          // The Excel table's header cells decide the JSON key names.
-          // Accept the intended header (CategoryID) and also Excel's
-          // default "Column1" in case the table headers haven't been
-          // renamed yet.
-          var id = row.CategoryID || row.categoryID || row.category_id || row.Column1;
-          if (id && tallies.hasOwnProperty(id)){ tallies[id] += 1; }
-        });
-        return tallies;
+        return Array.isArray(data) ? data : (data && Array.isArray(data.value)) ? data.value : [];
       })
       .catch(function(err){
-        // If this is blocked or the flow errors, goToResults() tells the
-        // visitor live results are unavailable instead of presenting a
-        // one-vote tally as if it were the whole community.
         console.warn("Results webhook fetch failed:", err);
         return null;
       });
   }
 
-  function sendVoteToBackend(categoryId, categoryLabel, neighborhood){
+  // The Excel table's header cells decide the JSON key names. Accept the
+  // intended headers and also Excel's default "Column1"/"Column4".
+  function rowCategoryId(row){
+    return row.CategoryID || row.categoryID || row.category_id || row.Column1 || "";
+  }
+  function rowTimestamp(row){
+    return String(row.Timestamp || row.timestamp || row.Column4 || "").trim();
+  }
+
+  function tallyRows(rows){
+    var tallies = emptyTallies();
+    rows.forEach(function(row){
+      var id = rowCategoryId(row);
+      if (id && tallies.hasOwnProperty(id)){ tallies[id] += 1; }
+    });
+    return tallies;
+  }
+
+  // The write flow answers before its Excel row exists, so a read fired
+  // right after a vote can miss that vote. Each vote carries a unique
+  // timestamp: keep reading (one request at a time) until the table
+  // contains this visitor's timestamp, which means the count is complete.
+  // Gives up after a few tries or ~15 seconds and returns what it has.
+  function waitForTrueCount(myTimestamp){
+    var deadline = Date.now() + 15000;
+    var tries = 0;
+    var lastRows = null;
+    return new Promise(function(resolve){
+      function attempt(){
+        tries++;
+        fetchRemoteRows().then(function(rows){
+          if (rows){
+            lastRows = rows;
+            for (var i = 0; i < rows.length; i++){
+              if (rowTimestamp(rows[i]) === myTimestamp){
+                resolve({ rows: rows, confirmed: true });
+                return;
+              }
+            }
+          }
+          if (tries >= 5 || Date.now() >= deadline){
+            resolve({ rows: lastRows, confirmed: false });
+            return;
+          }
+          setTimeout(attempt, 1000);
+        });
+      }
+      setTimeout(attempt, 1500);
+    });
+  }
+
+  function sendVoteToBackend(categoryId, categoryLabel, neighborhood, timestamp){
     if (!VOTE_WEBHOOK_URL) return;
     var payload = {
-      Timestamp: new Date().toISOString(),
+      Timestamp: timestamp || new Date().toISOString(),
       CategoryID: categoryId,
       CategoryLabel: categoryLabel,
       Neighborhood: neighborhood || ""
@@ -530,7 +622,9 @@
   // ---------------------------------------------------------------
   function showScreen(id){
     document.querySelectorAll(".screen").forEach(function(s){ s.classList.remove("active"); });
-    document.getElementById(id).classList.add("active");
+    var el = document.getElementById(id);
+    el.scrollTop = 0;
+    el.classList.add("active");
   }
 
   // ---------------------------------------------------------------
@@ -614,12 +708,9 @@
 
   function submitVote(){
     if (!state.choice) return;
-    // increment and persist the tally only once the visitor confirms
-    state.tallies[state.choice] = (state.tallies[state.choice] || 0) + 1;
-
     var chosen = CATEGORIES.filter(function(c){ return c.id === state.choice; })[0];
-    sendVoteToBackend(state.choice, chosen ? chosen.label : state.choice, state.neighborhood);
-
+    state.myTimestamp = new Date().toISOString();
+    sendVoteToBackend(state.choice, chosen ? chosen.label : state.choice, state.neighborhood, state.myTimestamp);
     goToResults();
   }
 
@@ -636,26 +727,35 @@
     });
   }
 
-  function goToResults(){
-    renderResultsFromTallies(state.tallies);
-    showScreen("screen-results");
+  function setResultsLoading(on){
+    var loading = document.getElementById("results-loading");
+    var content = document.getElementById("results-content");
+    loading.classList.toggle("show", on);
+    content.classList.toggle("show", !on);
+  }
 
-    fetchRemoteTallies().then(function(remote){
-      if (!remote){
-        state.remoteOk = false;
-        document.getElementById("results-note").textContent =
-          "Live community results aren't available right now — thank you for adding your voice.";
-        return;
-      }
-      state.remoteOk = true;
-      var merged = {};
-      // Take the higher of the two counts per category — guards against
-      // the brief race where this session's own Excel row hasn't been
-      // written yet when we ask for live results a moment later.
-      CATEGORIES.forEach(function(c){
-        merged[c.id] = Math.max(remote[c.id] || 0, state.tallies[c.id] || 0);
-      });
-      renderResultsFromTallies(merged);
+  function goToResults(){
+    setResultsLoading(true);
+    showScreen("screen-results");
+    var started = Date.now();
+
+    waitForTrueCount(state.myTimestamp).then(function(result){
+      // Never flash the loader: keep it up for at least a beat.
+      var pause = Math.max(0, 1400 - (Date.now() - started));
+      setTimeout(function(){
+        setResultsLoading(false);
+        if (!result.rows){
+          renderResultsFromTallies(null);   // community counts unavailable
+          return;
+        }
+        var tallies = tallyRows(result.rows);
+        // If the table never showed this vote, count it ourselves so the
+        // visitor's own voice is always included.
+        if (!result.confirmed){
+          tallies[state.choice] = (tallies[state.choice] || 0) + 1;
+        }
+        renderResultsFromTallies(tallies);
+      }, pause);
     });
   }
 
@@ -663,6 +763,8 @@
   // Screen 4: results
   // ---------------------------------------------------------------
   function renderResultsFromTallies(tallies){
+    var unavailable = !tallies;
+    if (unavailable) tallies = emptyTallies();
     var total = 0;
     CATEGORIES.forEach(function(c){ total += (tallies[c.id] || 0); });
     if (total === 0) total = 1;
@@ -697,6 +799,11 @@
     var totalVoices = total === 1 && (tallies[state.choice]||0) <= 1 ? 1 : total;
     document.getElementById("results-note").textContent =
       totalVoices + (totalVoices === 1 ? " voice heard so far today." : " voices heard so far today.");
+    if (unavailable){
+      list.innerHTML = "";
+      document.getElementById("results-note").textContent =
+        "We couldn't load the community results just now \u2014 thank you for adding your voice.";
+    }
 
     var chosen = CATEGORIES.filter(function(c){ return c.id === state.choice; })[0];
     if (chosen){
