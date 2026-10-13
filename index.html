@@ -450,7 +450,13 @@
 
   function fetchRemoteTallies(){
     if (!RESULTS_WEBHOOK_URL) return Promise.resolve(null);
-    return fetch(RESULTS_WEBHOOK_URL)
+    // The flow's trigger accepts POST only (blank Method = POST), so the
+    // results request is a POST with an empty JSON body.
+    return fetch(RESULTS_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    })
       .then(function(res){
         if (!res.ok) throw new Error("Results flow returned HTTP " + res.status);
         return res.json();
